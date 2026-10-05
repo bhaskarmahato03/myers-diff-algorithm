@@ -13,6 +13,10 @@ def read_lines(path):
         print(f"error: cannot read input file: {e}", file=sys.stderr)
         return None
 
+    # An empty file has no lines (b"".split() would give one empty line).
+    if data == b"":
+        return []
+
     lines = data.split(b"\n")
 
     # If file ends with '\n', split() creates one extra empty item.
