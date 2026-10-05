@@ -1,317 +1,334 @@
 import sys
 
 
-def read_lines(path: str) -> list[bytes]:
-    with open(path, "rb") as file:
-        data = file.read()
+# ---------------------------------------------------------
+# File reading
+# ---------------------------------------------------------
 
-    if data == b"":
-        return []
+def read_lines(path):
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        print(f"error: cannot read input file: {e}", file=sys.stderr)
+        return None
 
     lines = data.split(b"\n")
 
-    if lines[-1] == b"":
+    # If file ends with '\n', split() creates one extra empty item.
+    if data.endswith(b"\n"):
         lines.pop()
 
     return lines
 
 
-def myers_diff(a: list[bytes], b: list[bytes]) -> list[tuple[str, bytes]]:
-    n = len(a)
-    m = len(b)
+# ---------------------------------------------------------
+# Myers middle-snake implementation
+# ---------------------------------------------------------
 
-    v = {1: 0}
-    trace = []
-    distance = 0
+def middle_snake(a, a_start, a_end, b, b_start, b_end, equal):
+    n = a_end - a_start
+    m = b_end - b_start
 
-    # Find shortest edit path
-    for d in range(n + m + 1):
-        trace.append(v.copy())
+    max_d = (n + m + 1) // 2
+    delta = n - m
 
+    offset = max_d + 1
+    size = 2 * max_d + 3
+
+    forward = [-1] * size
+    backward = [-1] * size
+
+    forward[offset + 1] = 0
+    backward[offset + 1] = 0
+
+    odd = (delta & 1) != 0
+
+    for d in range(max_d + 1):
+
+        # Forward search
         for k in range(-d, d + 1, 2):
+            index = offset + k
 
             if k == -d or (
-                k != d and v.get(k - 1, -1) < v.get(k + 1, -1)
+                k != d and forward[index - 1] < forward[index + 1]
             ):
-                x = v.get(k + 1, 0)
+                x = forward[index + 1]
             else:
-                x = v.get(k - 1, 0) + 1
+                x = forward[index - 1] + 1
 
             y = x - k
 
-            # Snake
-            while x < n and y < m and a[x] == b[y]:
+            while (
+                x < n
+                and y < m
+                and equal(a[a_start + x], b[b_start + y])
+            ):
                 x += 1
                 y += 1
 
-            v[k] = x
+            forward[index] = x
 
-            if x >= n and y >= m:
-                distance = d
-                break
-        else:
-            continue
+            if odd:
+                reverse_k = delta - k
 
-        break
+                if (
+                    -(d - 1) <= reverse_k <= d - 1
+                    and backward[offset + reverse_k] != -1
+                ):
+                    backward_x = n - backward[offset + reverse_k]
 
-    # Reconstruct the path
-    x = n
-    y = m
-    reversed_ops = []
+                    if x >= backward_x:
+                        return a_start + x, b_start + y
 
-    for d in range(distance, 0, -1):
-        previous_v = trace[d]
-        k = x - y
+        # Backward search
+        for k in range(-d, d + 1, 2):
+            index = offset + k
 
-        if k == -d or (
-            k != d
-            and previous_v.get(k - 1, -1)
-            < previous_v.get(k + 1, -1)
-        ):
-            previous_k = k + 1
-        else:
-            previous_k = k - 1
+            if k == -d or (
+                k != d and backward[index - 1] < backward[index + 1]
+            ):
+                x = backward[index + 1]
+            else:
+                x = backward[index - 1] + 1
 
-        previous_x = previous_v.get(previous_k, 0)
-        previous_y = previous_x - previous_k
+            y = x - k
 
-        # Matching part
-        while x > previous_x and y > previous_y:
-            reversed_ops.append((" ", a[x - 1]))
-            x -= 1
-            y -= 1
+            while (
+                x < n
+                and y < m
+                and equal(
+                    a[a_end - x - 1],
+                    b[b_end - y - 1],
+                )
+            ):
+                x += 1
+                y += 1
 
-        # Edit
-        if x == previous_x:
-            reversed_ops.append(("+", b[y - 1]))
-            y -= 1
-        else:
-            reversed_ops.append(("-", a[x - 1]))
-            x -= 1
+            backward[index] = x
 
-    # Remaining matching prefix
-    while x > 0 and y > 0:
-        reversed_ops.append((" ", a[x - 1]))
-        x -= 1
-        y -= 1
+            if not odd:
+                forward_k = delta - k
 
-    while x > 0:
-        reversed_ops.append(("-", a[x - 1]))
-        x -= 1
+                if (
+                    -d <= forward_k <= d
+                    and forward[offset + forward_k] != -1
+                ):
+                    forward_x = forward[offset + forward_k]
+                    backward_x = n - x
 
-    while y > 0:
-        reversed_ops.append(("+", b[y - 1]))
-        y -= 1
+                    if forward_x >= backward_x:
+                        return (
+                            a_start + backward_x,
+                            b_start + m - (x - k),
+                        )
 
-    reversed_ops.reverse()
+    return a_start, b_start
 
-    # Deletions must come before insertions
-    # inside every change block.
+
+# ---------------------------------------------------------
+# Generic recursive Myers diff
+# ---------------------------------------------------------
+
+def myers_recursive(a, a_start, a_end, b, b_start, b_end, equal, result):
+    # Remove common prefix
+    while (
+        a_start < a_end
+        and b_start < b_end
+        and equal(a[a_start], b[b_start])
+    ):
+        result.append((" ", a[a_start]))
+        a_start += 1
+        b_start += 1
+
+    # A is exhausted
+    if a_start == a_end:
+        while b_start < b_end:
+            result.append(("+", b[b_start]))
+            b_start += 1
+        return
+
+    # B is exhausted
+    if b_start == b_end:
+        while a_start < a_end:
+            result.append(("-", a[a_start]))
+            a_start += 1
+        return
+
+    # Find common suffix
+    suffix_a = a_end
+    suffix_b = b_end
+
+    while (
+        a_start < suffix_a
+        and b_start < suffix_b
+        and equal(a[suffix_a - 1], b[suffix_b - 1])
+    ):
+        suffix_a -= 1
+        suffix_b -= 1
+
+    # Only B has changed in the middle
+    if a_start == suffix_a:
+        while b_start < suffix_b:
+            result.append(("+", b[b_start]))
+            b_start += 1
+
+        while suffix_a < a_end:
+            result.append((" ", a[suffix_a]))
+            suffix_a += 1
+
+        return
+
+    # Only A has changed in the middle
+    if b_start == suffix_b:
+        while a_start < suffix_a:
+            result.append(("-", a[a_start]))
+            a_start += 1
+
+        while suffix_a < a_end:
+            result.append((" ", a[suffix_a]))
+            suffix_a += 1
+
+        return
+
+    # Find the middle snake.
+    x, y = middle_snake(
+        a,
+        a_start,
+        suffix_a,
+        b,
+        b_start,
+        suffix_b,
+        equal,
+    )
+
+    # Solve left half
+    myers_recursive(
+        a,
+        a_start,
+        x,
+        b,
+        b_start,
+        y,
+        equal,
+        result,
+    )
+
+    # Solve right half
+    myers_recursive(
+        a,
+        x,
+        suffix_a,
+        b,
+        y,
+        suffix_b,
+        equal,
+        result,
+    )
+
+    # Add the common suffix
+    while suffix_a < a_end:
+        result.append((" ", a[suffix_a]))
+        suffix_a += 1
+
+
+def myers_diff(a, b):
     result = []
-    deletions = []
-    insertions = []
 
-    def flush_changes():
-        for line in deletions:
-            result.append(("-", line))
-
-        for line in insertions:
-            result.append(("+", line))
-
-        deletions.clear()
-        insertions.clear()
-
-    for op, line in reversed_ops:
-
-        if op == "-":
-            deletions.append(line)
-
-        elif op == "+":
-            insertions.append(line)
-
-        else:
-            flush_changes()
-            result.append((" ", line))
-
-    flush_changes()
+    myers_recursive(
+        a,
+        0,
+        len(a),
+        b,
+        0,
+        len(b),
+        lambda x, y: x == y,
+        result,
+    )
 
     return result
 
 
-def myers_generic(a, b):
-    """
-    Myers diff for any sequence.
+# ---------------------------------------------------------
+# Part A
+# ---------------------------------------------------------
 
-    Returns:
-        " " = keep
-        "-" = delete
-        "+" = insert
-    """
+def line_diff(a, b):
+    diff = myers_diff(a, b)
 
-    n = len(a)
-    m = len(b)
+    result = []
+    i = 0
 
-    v = {1: 0}
-    trace = []
-    distance = 0
+    while i < len(diff):
 
-    # Find shortest edit path
-    for d in range(n + m + 1):
-        trace.append(v.copy())
-
-        for k in range(-d, d + 1, 2):
-
-            if k == -d or (
-                k != d and v.get(k - 1, -1) < v.get(k + 1, -1)
-            ):
-                x = v.get(k + 1, 0)
-            else:
-                x = v.get(k - 1, 0) + 1
-
-            y = x - k
-
-            # Snake
-            while x < n and y < m and a[x] == b[y]:
-                x += 1
-                y += 1
-
-            v[k] = x
-
-            if x >= n and y >= m:
-                distance = d
-                break
-        else:
+        # Keep
+        if diff[i][0] == " ":
+            result.append(diff[i])
+            i += 1
             continue
 
-        break
+        deletes = []
+        inserts = []
 
-    # Reconstruct
-    x = n
-    y = m
-    reversed_ops = []
+        # Collect one contiguous change block
+        while i < len(diff) and diff[i][0] != " ":
+            op = diff[i]
+            i += 1
 
-    for d in range(distance, 0, -1):
-        previous_v = trace[d]
-        k = x - y
+            if op[0] == "-":
+                deletes.append(op)
+            else:
+                inserts.append(op)
 
-        if k == -d or (
-            k != d
-            and previous_v.get(k - 1, -1)
-            < previous_v.get(k + 1, -1)
-        ):
-            previous_k = k + 1
-        else:
-            previous_k = k - 1
+        # Assignment requires deletions first,
+        # then insertions.
+        result.extend(deletes)
+        result.extend(inserts)
 
-        previous_x = previous_v.get(previous_k, 0)
-        previous_y = previous_x - previous_k
-
-        while x > previous_x and y > previous_y:
-            reversed_ops.append((" ", a[x - 1]))
-            x -= 1
-            y -= 1
-
-        if x == previous_x:
-            reversed_ops.append(("+", b[y - 1]))
-            y -= 1
-        else:
-            reversed_ops.append(("-", a[x - 1]))
-            x -= 1
-
-    while x > 0 and y > 0:
-        reversed_ops.append((" ", a[x - 1]))
-        x -= 1
-        y -= 1
-
-    while x > 0:
-        reversed_ops.append(("-", a[x - 1]))
-        x -= 1
-
-    while y > 0:
-        reversed_ops.append(("+", b[y - 1]))
-        y -= 1
-
-    reversed_ops.reverse()
-
-    return reversed_ops
+    return result
 
 
-def merge_ranges(
-    ranges: list[tuple[int, int]]
-) -> list[tuple[int, int]]:
+def print_lines(diff):
+    out = sys.stdout.buffer
 
-    if not ranges:
-        return []
+    for operation, line in diff:
+        out.write(operation.encode("ascii"))
+        out.write(line)
+        out.write(b"\n")
 
-    ranges.sort()
-
-    merged = [ranges[0]]
-
-    for start, end in ranges[1:]:
-        old_start, old_end = merged[-1]
-
-        # Merge overlapping or touching ranges.
-        if start <= old_end:
-            merged[-1] = (
-                old_start,
-                max(old_end, end)
-            )
-        else:
-            merged.append((start, end))
-
-    return merged
+    out.flush()
 
 
-def character_ranges(
-    old: bytes,
-    new: bytes
-) -> tuple[
-    list[tuple[int, int]],
-    list[tuple[int, int]]
-]:
+# ---------------------------------------------------------
+# Character-level Myers
+# ---------------------------------------------------------
 
-    old_chars = list(old.decode("utf-8"))
-    new_chars = list(new.decode("utf-8"))
+def code_points(line):
+    return [ord(ch) for ch in line.decode("utf-8")]
 
-    operations = myers_generic(
-        old_chars,
-        new_chars
+
+def character_diff(a, b):
+    result = []
+
+    myers_recursive(
+        a,
+        0,
+        len(a),
+        b,
+        0,
+        len(b),
+        lambda x, y: x == y,
+        result,
     )
 
-    old_ranges = []
-    new_ranges = []
-
-    old_pos = 0
-    new_pos = 0
-
-    for op, char in operations:
-
-        if op == " ":
-            old_pos += 1
-            new_pos += 1
-
-        elif op == "-":
-            old_ranges.append(
-                (old_pos, old_pos + 1)
-            )
-            old_pos += 1
-
-        elif op == "+":
-            new_ranges.append(
-                (new_pos, new_pos + 1)
-            )
-            new_pos += 1
-
-    return (
-        merge_ranges(old_ranges),
-        merge_ranges(new_ranges)
-    )
+    return result
 
 
-def format_ranges(
-    ranges: list[tuple[int, int]]
-) -> str:
+# ---------------------------------------------------------
+# Highlight ranges
+# ---------------------------------------------------------
 
+def format_ranges(ranges):
     if not ranges:
         return "."
 
@@ -321,153 +338,177 @@ def format_ranges(
     )
 
 
-def print_lines_diff(operations):
-    for op, line in operations:
-        sys.stdout.buffer.write(
-            op.encode("ascii")
-            + line
-            + b"\n"
+def character_ranges(old_line, new_line):
+    old_cp = code_points(old_line)
+    new_cp = code_points(new_line)
+
+    ops = character_diff(old_cp, new_cp)
+
+    old_ranges = []
+    new_ranges = []
+
+    old_pos = 0
+    new_pos = 0
+
+    old_start = None
+    old_end = None
+
+    new_start = None
+    new_end = None
+
+    for operation, value in ops:
+
+        if operation == " ":
+
+            if old_start is not None:
+                old_ranges.append(
+                    (old_start, old_end)
+                )
+                old_start = None
+
+            if new_start is not None:
+                new_ranges.append(
+                    (new_start, new_end)
+                )
+                new_start = None
+
+            old_pos += 1
+            new_pos += 1
+
+        elif operation == "-":
+
+            if old_start is None:
+                old_start = old_pos
+
+            old_pos += 1
+            old_end = old_pos
+
+        else:
+            if new_start is None:
+                new_start = new_pos
+
+            new_pos += 1
+            new_end = new_pos
+
+    if old_start is not None:
+        old_ranges.append(
+            (old_start, old_end)
         )
 
+    if new_start is not None:
+        new_ranges.append(
+            (new_start, new_end)
+        )
 
-def print_highlight_diff(operations):
+    return (
+        format_ranges(old_ranges),
+        format_ranges(new_ranges),
+    )
 
+
+# ---------------------------------------------------------
+# Part B
+# ---------------------------------------------------------
+
+def print_highlight(diff):
+    out = sys.stdout.buffer
     i = 0
 
-    while i < len(operations):
+    while i < len(diff):
 
-        # Unchanged line
-        if operations[i][0] == " ":
+        operation, line = diff[i]
 
-            op, line = operations[i]
-
-            sys.stdout.buffer.write(
-                b" " + line + b"\n"
-            )
+        # Keep
+        if operation == " ":
+            out.write(b" ")
+            out.write(line)
+            out.write(b"\n")
 
             i += 1
             continue
 
-        # Change block
-        deletions = []
-        insertions = []
+        deletes = []
+        inserts = []
 
-        while (
-            i < len(operations)
-            and operations[i][0] != " "
-        ):
-
-            op, line = operations[i]
-
-            if op == "-":
-                deletions.append(line)
-
-            elif op == "+":
-                insertions.append(line)
-
+        # One contiguous change block
+        while i < len(diff) and diff[i][0] != " ":
+            operation, line = diff[i]
             i += 1
 
-        # Print deletions first.
-        for line in deletions:
-            sys.stdout.buffer.write(
-                b"-" + line + b"\n"
-            )
+            if operation == "-":
+                deletes.append((operation, line))
+            else:
+                inserts.append((operation, line))
 
-        # Pair deletions and insertions.
-        pair_count = min(
-            len(deletions),
-            len(insertions)
-        )
+        # Print all deletions first
+        for _, line in deletes:
+            out.write(b"-")
+            out.write(line)
+            out.write(b"\n")
 
-        # Print insertions.
-        for index, line in enumerate(insertions):
+        # Then insertions
+        for j, (_, line) in enumerate(inserts):
 
-            # Print + line.
-            sys.stdout.buffer.write(
-                b"+" + line + b"\n"
-            )
+            out.write(b"+")
+            out.write(line)
+            out.write(b"\n")
 
-            # If this insertion has a matching
-            # deletion, print ? immediately after it.
-            if index < pair_count:
-
-                old_line = deletions[index]
+            # Pair insertion j with deletion j
+            if j < len(deletes):
+                old_line = deletes[j][1]
 
                 old_ranges, new_ranges = character_ranges(
                     old_line,
-                    line
-                )
-
-                old_text = format_ranges(
-                    old_ranges
-                )
-
-                new_text = format_ranges(
-                    new_ranges
+                    line,
                 )
 
                 question = (
-                    f"? {old_text} | {new_text}\n"
+                    "? "
+                    + old_ranges
+                    + " | "
+                    + new_ranges
+                    + "\n"
                 )
 
-                # IMPORTANT:
-                # Use the same binary output stream
-                # as the + line so ordering is guaranteed.
-                sys.stdout.buffer.write(
-                    question.encode("utf-8")
-                )
+                out.write(question.encode("ascii"))
+
+    out.flush()
 
 
-def main() -> int:
+# ---------------------------------------------------------
+# Main
+# ---------------------------------------------------------
 
-    if len(sys.argv) != 4 or sys.argv[1] not in (
-        "lines",
-        "highlight"
+def main():
+    if (
+        len(sys.argv) != 4
+        or sys.argv[1] not in ("lines", "highlight")
     ):
         print(
             "usage: main.py lines|highlight A_PATH B_PATH",
-            file=sys.stderr
+            file=sys.stderr,
         )
         return 2
 
     command, a_path, b_path = sys.argv[1:]
 
-    try:
-        a_lines = read_lines(a_path)
-        b_lines = read_lines(b_path)
-
-    except OSError as error:
-        print(error, file=sys.stderr)
+    file_a = read_lines(a_path)
+    if file_a is None:
         return 2
 
-    try:
-
-        operations = myers_diff(
-            a_lines,
-            b_lines
-        )
-
-        if command == "lines":
-
-            print_lines_diff(
-                operations
-            )
-
-        else:
-
-            print_highlight_diff(
-                operations
-            )
-
-    except (
-        UnicodeDecodeError,
-        ValueError
-    ) as error:
-
-        print(error, file=sys.stderr)
+    file_b = read_lines(b_path)
+    if file_b is None:
         return 2
+
+    diff = line_diff(file_a, file_b)
+
+    if command == "lines":
+        print_lines(diff)
+    else:
+        print_highlight(diff)
 
     return 0
 
 
-raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
